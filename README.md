@@ -13,6 +13,12 @@ Loki VCS is an offline-first version control system written in Rust. It stores r
 
 ## Install
 
+Install the published CLI with Cargo.
+
+~~~sh
+cargo install loki-vcs-cli --locked
+~~~
+
 Use a native release for your architecture when available. Put lvcs on your PATH. The SDK archive also contains the generated header, library, examples, and license. See the [native SDK guide](docs/native.md).
 
 To build from source, install a current stable Rust toolchain and a native C toolchain. Run these commands from this workspace.
@@ -23,7 +29,7 @@ cargo install --path crates/cli --locked
 cargo test --workspace --locked
 ~~~
 
-A Rust application can depend on the client or server crate by local path. The Rust crates, CLI, and SDK are versioned together at 0.1.0. Use path dependencies until the packages are published.
+Rust applications can add the published client or server crate with `cargo add loki-vcs-client@0.1.0` or `cargo add loki-vcs-server@0.1.0`.
 
 ## Local workflow
 
