@@ -1,0 +1,17 @@
+[package]
+name = "loki-vcs-core"
+description = "Object format and storage engine for Loki VCS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+blake3 = "1"
+fs2 = "0.4"
+zstd = "0.13"
+unicode-normalization = "0.1"
+similar = "3"

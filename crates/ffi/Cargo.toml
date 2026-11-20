@@ -1,0 +1,16 @@
+[package]
+name = "loki-vcs-ffi"
+description = "Stable native client ABI for Loki VCS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "loki_vcs"
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+loki-vcs-client.workspace = true
+loki-vcs-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true

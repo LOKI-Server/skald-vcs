@@ -1,0 +1,5 @@
+language = "C"
+include_guard = "LOKI_VCS_H"
+cpp_compat = true
+style = "tag"
+autogen_warning = "/* Generated from loki-vcs-ffi by cbindgen. */"
