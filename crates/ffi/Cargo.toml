@@ -4,6 +4,9 @@ description = "Stable native client ABI for Loki VCS"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+readme.workspace = true
 
 [lib]
 name = "loki_vcs"

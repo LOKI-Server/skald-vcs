@@ -6,6 +6,9 @@ resolver = "3"
 version = "0.1.0"
 edition = "2024"
 license = "MIT"
+repository = "https://github.com/LOKI-Server/loki-vcs"
+homepage = "https://github.com/LOKI-Server/loki-vcs"
+readme = "README.md"
 
 [workspace.dependencies]
 loki-vcs-core = { path = "crates/core", version = "0.1.0" }
