@@ -1,5 +1,5 @@
-use loki_vcs_client::Repository;
-use loki_vcs_core::Settings;
+use skald_vcs_client::{Repository, WorkspaceChange};
+use skald_vcs_core::Settings;
 use std::{fs, time::Duration};
 
 fn add(repo: &Repository, path: &str, content: &[u8], title: &str) -> String {
@@ -8,6 +8,65 @@ fn add(repo: &Repository, path: &str, content: &[u8], title: &str) -> String {
     fs::write(file, content).unwrap();
     repo.stage(&[path.into()]).unwrap();
     repo.commit("Developer", title).unwrap().to_string()
+}
+
+#[test]
+fn sparse_selection_preserves_local_work_and_excluded_index_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let repo = Repository::init(dir.path(), Settings::default()).unwrap();
+    add(&repo, "Assets/Keep/art.txt", b"keep", "add art");
+    add(&repo, "Assets/Old/level.txt", b"level", "add level");
+    add(&repo, ".skaldignore", b"*.tmp", "ignore generated files");
+    let path = repo.root().join("Assets/Old/level.txt");
+    let untracked = repo.root().join("Assets/Old/notes.tmp");
+    let remove = WorkspaceChange::Remove(vec!["Assets/Old".into()]);
+
+    fs::write(&path, b"working edits").unwrap();
+    assert!(repo.change_workspace(&remove, false, None).is_err());
+    assert_eq!(fs::read(&path).unwrap(), b"working edits");
+    repo.stage(&["Assets/Old".into()]).unwrap();
+    assert!(repo.change_workspace(&remove, false, None).is_err());
+    repo.unstage(&["Assets/Old".into()]).unwrap();
+    repo.restore("HEAD", &["Assets/Old/level.txt".into()])
+        .unwrap();
+
+    fs::write(&untracked, b"ignore me").unwrap();
+    assert!(repo.change_workspace(&remove, false, None).is_err());
+    fs::remove_file(&untracked).unwrap();
+    let visible = repo.status().unwrap();
+    assert!(visible.staged.is_empty() && visible.unstaged.is_empty());
+    let preview = repo.change_workspace(&remove, true, None).unwrap();
+    assert_eq!(preview.remove, ["Assets/Old/level.txt"]);
+    assert!(path.is_file());
+    repo.change_workspace(&remove, false, None).unwrap();
+    assert!(!path.exists());
+    assert!(repo.status().unwrap().unstaged.is_empty());
+    assert!(repo.diff(None, None, false).unwrap().is_empty());
+
+    fs::write(repo.root().join("Assets/Keep/art.txt"), b"updated artwork").unwrap();
+    repo.stage(&[".".into()]).unwrap();
+    assert_eq!(
+        repo.status().unwrap().staged.keys().collect::<Vec<_>>(),
+        ["Assets/Keep/art.txt"]
+    );
+    repo.commit("Developer", "update from sparse workspace")
+        .unwrap();
+    let excluded = repo
+        .workspace_files(None)
+        .unwrap()
+        .into_iter()
+        .find(|file| file.path == "Assets/Old/level.txt")
+        .unwrap();
+    assert!(!excluded.included);
+    assert_eq!(excluded.size, 5);
+    repo.change_workspace(
+        &WorkspaceChange::Add(vec!["Assets/Old/level.txt".into()]),
+        false,
+        None,
+    )
+    .unwrap();
+    assert_eq!(fs::read(path).unwrap(), b"level");
+    repo.verify().unwrap();
 }
 
 #[test]
@@ -51,7 +110,7 @@ fn history_merge_restore_and_ignore_work_without_network() {
     repo.unstage(&["doc.txt".into()]).unwrap();
     assert!(repo.status().unwrap().staged.is_empty());
     repo.restore("HEAD", &["doc.txt".into()]).unwrap();
-    fs::write(dir.path().join(".lvcsignore"), "*.tmp\n!important.tmp\n").unwrap();
+    fs::write(dir.path().join(".skaldignore"), "*.tmp\n!important.tmp\n").unwrap();
     fs::write(dir.path().join("discard.tmp"), "ignored").unwrap();
     fs::write(dir.path().join("important.tmp"), "keep").unwrap();
     let status = repo.status().unwrap();
@@ -141,7 +200,7 @@ fn interrupted_checkout_replays_before_open_returns() {
     fs::write(repo.root().join("second"), "feature file").unwrap();
     repo.stage(&[".".into()]).unwrap();
     repo.commit("Developer", "feature").unwrap();
-    let metadata = repo.root().join(".lvcs");
+    let metadata = repo.root().join(".skald");
     let state = || -> Value {
         serde_json::from_slice(&fs::read(metadata.join("state.json")).unwrap()).unwrap()
     };
@@ -151,7 +210,7 @@ fn interrupted_checkout_replays_before_open_returns() {
     drop(repo);
 
     // The operation persisted its intent and removed one path before interruption.
-    loki_vcs_core::atomic_json(
+    skald_vcs_core::atomic_json(
         &metadata.join("checkout.json"),
         &json!({
             "old": initial["index"], "new": target["index"], "state": target

@@ -1,11 +1,11 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use loki_vcs_client::{Merge, Remote, Repository};
-use loki_vcs_core::Settings;
+use skald_vcs_client::{Merge, Remote, Repository, WorkspaceChange};
+use skald_vcs_core::Settings;
 use std::{path::PathBuf, time::Duration};
 
 #[derive(Parser)]
-#[command(version, about = "Loki VCS")]
+#[command(version, about = "Skald")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -18,11 +18,20 @@ enum Command {
         #[arg(default_value = ".")]
         path: PathBuf,
     },
-    /// Download the complete history of a remote into a new directory.
+    /// Clone a repository into a new directory.
     Clone {
         url: String,
         destination: Option<PathBuf>,
+        /// Download metadata first and only materialize explicitly included paths.
+        #[arg(long)]
+        sparse: bool,
+        /// Include a root-relative file or directory. Repeat to include multiple paths.
+        #[arg(long, value_name = "PATH")]
+        include: Vec<String>,
     },
+    /// Choose which paths are present in this working copy.
+    #[command(subcommand)]
+    Workspace(WorkspaceCommand),
     Status {
         #[arg(long)]
         refresh: bool,
@@ -155,22 +164,85 @@ enum RemoteCommand {
     Remove { name: String },
 }
 
+#[derive(Subcommand)]
+enum WorkspaceCommand {
+    /// Show the saved include and exclude rules.
+    List,
+    /// List tracked paths, sizes, and whether they are included.
+    Files { revision: Option<String> },
+    /// Replace the selection. Use . to select everything or no paths for metadata only.
+    Set {
+        paths: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Include files or directories, downloading their current contents as needed.
+    Add {
+        #[arg(required = true)]
+        paths: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Remove files or directories from this working copy.
+    Remove {
+        #[arg(required = true)]
+        paths: Vec<String>,
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Reclaim cached chunks that origin still holds and local work doesn't need.
+    Prune,
+}
+
+fn workspace(repo: &Repository, command: WorkspaceCommand) -> Result<()> {
+    let (change, dry_run) = match command {
+        WorkspaceCommand::List => {
+            for (path, include) in repo.workspace_selection()?.rules() {
+                println!("{} {path}", if *include { "include" } else { "exclude" });
+            }
+            return Ok(());
+        }
+        WorkspaceCommand::Files { revision } => {
+            for file in repo.workspace_files(revision.as_deref())? {
+                let selection = if file.included { "+" } else { "-" };
+                println!("{selection} {:>12} {}", file.size, file.path);
+            }
+            return Ok(());
+        }
+        WorkspaceCommand::Set { paths, dry_run } => (WorkspaceChange::Set(paths), dry_run),
+        WorkspaceCommand::Add { paths, dry_run } => (WorkspaceChange::Add(paths), dry_run),
+        WorkspaceCommand::Remove { paths, dry_run } => (WorkspaceChange::Remove(paths), dry_run),
+        WorkspaceCommand::Prune => {
+            println!("Removed {} cached chunks", repo.prune_workspace(&token())?);
+            return Ok(());
+        }
+    };
+    let plan = repo.change_workspace(&change, dry_run, Some(&token()))?;
+    for path in plan.add {
+        println!("+ {path}");
+    }
+    for path in plan.remove {
+        println!("- {path}");
+    }
+    Ok(())
+}
+
 fn main() {
     if let Err(error) = run(Cli::parse().command) {
-        eprintln!("lvcs: {error:#}");
+        eprintln!("skald: {error:#}");
         std::process::exit(1);
     }
 }
 
 fn token() -> String {
-    std::env::var("LVCS_TOKEN").unwrap_or_default()
+    std::env::var("SKALD_TOKEN").unwrap_or_default()
 }
 
 fn author(value: Option<String>) -> Result<String> {
     value
-        .or_else(|| std::env::var("LVCS_AUTHOR").ok())
+        .or_else(|| std::env::var("SKALD_AUTHOR").ok())
         .filter(|s| !s.trim().is_empty())
-        .context("set LVCS_AUTHOR or pass --author")
+        .context("set SKALD_AUTHOR or pass --author")
 }
 
 fn report_merge(result: Merge) -> Result<()> {
@@ -201,7 +273,12 @@ fn run(command: Command) -> Result<()> {
             println!("Initialized {}", repo.root().display());
             return Ok(());
         }
-        Command::Clone { url, destination } => {
+        Command::Clone {
+            url,
+            destination,
+            sparse,
+            include,
+        } => {
             let destination = destination.unwrap_or_else(|| {
                 PathBuf::from(
                     url.trim_end_matches('/')
@@ -210,7 +287,11 @@ fn run(command: Command) -> Result<()> {
                         .unwrap_or("working-copy"),
                 )
             });
-            let repo = Repository::clone_remote(&destination, &url, &token())?;
+            let repo = if sparse || !include.is_empty() {
+                Repository::clone_sparse(&destination, &url, &token(), &include)?
+            } else {
+                Repository::clone_remote(&destination, &url, &token())?
+            };
             println!("Cloned {}", repo.root().display());
             return Ok(());
         }
@@ -218,6 +299,7 @@ fn run(command: Command) -> Result<()> {
     };
     match command {
         Command::Init { .. } | Command::Clone { .. } => unreachable!(),
+        Command::Workspace(action) => workspace(&repo, action)?,
         Command::Status { refresh } => {
             let status = repo.status_with_refresh(refresh)?;
             println!(
@@ -268,9 +350,13 @@ fn run(command: Command) -> Result<()> {
                 }
             }
         }
-        Command::Switch { branch } => repo.checkout(&branch, false)?,
-        Command::Checkout { revision } => repo.checkout(&revision, true)?,
-        Command::Restore { revision, paths } => repo.restore(&revision, &paths)?,
+        Command::Switch { branch } => repo.checkout_with_token(&branch, false, Some(&token()))?,
+        Command::Checkout { revision } => {
+            repo.checkout_with_token(&revision, true, Some(&token()))?
+        }
+        Command::Restore { revision, paths } => {
+            repo.restore_with_token(&revision, &paths, Some(&token()))?
+        }
         Command::Log { revision, limit } => {
             for (id, commit) in repo.history(revision.as_deref(), limit)? {
                 println!(
@@ -298,10 +384,11 @@ fn run(command: Command) -> Result<()> {
                 repo.abort_merge()?;
             } else {
                 let revision = revision.context("specify a revision to merge")?;
-                report_merge(repo.merge(
+                report_merge(repo.merge_with_token(
                     &revision,
                     &author(who)?,
                     &message.unwrap_or_else(|| format!("Merge {revision}")),
+                    Some(&token()),
                 )?)?;
             }
         }

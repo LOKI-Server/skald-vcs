@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
-use loki_vcs_client::Repository;
-use loki_vcs_core::{Id, Settings, Store};
+use skald_vcs_client::Repository;
+use skald_vcs_core::{Id, Settings, Store};
 use std::{
     collections::HashSet,
     fs,
@@ -114,12 +114,12 @@ fn measure(
         ))
     };
     let (first, t1) = run("initial")?;
-    let store = Store::open(&dir.join(".lvcs/objects"), Settings::default())?;
-    let first_disk = bytes(&dir.join(".lvcs/objects"))?;
+    let store = Store::open(&dir.join(".skald/objects"), Settings::default())?;
+    let first_disk = bytes(&dir.join(".skald/objects"))?;
     let first_objects = store.graph([first])?;
     change(&dir)?;
     let (second, t2) = run("update")?;
-    let second_disk = bytes(&dir.join(".lvcs/objects"))?;
+    let second_disk = bytes(&dir.join(".skald/objects"))?;
     let second_objects = store.graph([second])?;
     let payload = |ids: &HashSet<Id>| -> Result<usize> {
         ids.iter()
@@ -127,9 +127,7 @@ fn measure(
     };
     let first_wire = payload(&first_objects)?;
     let delta_wire = payload(&second_objects.difference(&first_objects).copied().collect())?;
-    println!(
-        "{name},Loki VCS,{first_disk},{second_disk},{first_wire},{delta_wire},{t1:.3},{t2:.3}"
-    );
+    println!("{name},Skald,{first_disk},{second_disk},{first_wire},{delta_wire},{t1:.3},{t2:.3}");
     if let Some(git) = git {
         let dir = temp.path().join("comparison");
         fs::create_dir(&dir)?;

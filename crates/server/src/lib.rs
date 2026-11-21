@@ -1,10 +1,10 @@
 use anyhow::{Context, Result, ensure};
-use loki_vcs_core::{
+use serde::{Deserialize, Serialize};
+use skald_vcs_core::{
     Id, Kind, Settings, Store, VERSION, atomic_json, disk_lock, now,
     protocol::{Lock, MAX_NEGOTIATION, MAX_REFS, Refs, Update},
     reference, valid_path,
 };
-use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, HashSet},
     fs,
@@ -279,9 +279,9 @@ impl Hosted {
         )
     }
 
-    pub fn entry(&self, revision: Id, path: &str) -> Result<loki_vcs_core::Entry> {
+    pub fn entry(&self, revision: Id, path: &str) -> Result<skald_vcs_core::Entry> {
         valid_path(path)?;
-        let mut entry = loki_vcs_core::Entry {
+        let mut entry = skald_vcs_core::Entry {
             id: self.store.revision(revision)?.root,
             executable: false,
         };

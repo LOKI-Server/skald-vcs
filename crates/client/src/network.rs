@@ -1,13 +1,13 @@
-use super::{Head, Merge, Repository, State, resolve};
+use super::{Head, Merge, Repository, State, WorkspaceSelection, resolve};
 use anyhow::{Context, Result, ensure};
-use loki_vcs_core::{
-    Id, Kind, MAX_GRAPH, MAX_OBJECT, Object, Settings, Store, VERSION,
-    protocol::{MAX_NEGOTIATION, MAX_REFS, Objects, Refs, Update},
-    read_bounded, reference,
-};
 use reqwest::{
     Url,
     blocking::{Client, RequestBuilder, Response},
+};
+use skald_vcs_core::{
+    Id, Kind, MAX_GRAPH, MAX_OBJECT, Object, Settings, Store, VERSION,
+    protocol::{MAX_NEGOTIATION, MAX_REFS, Objects, Refs, Update},
+    read_bounded, reference,
 };
 use std::{
     collections::{BTreeMap, HashSet},
@@ -78,7 +78,20 @@ impl Remote {
         Ok(refs)
     }
 
-    fn receive(&self, store: &Store, refs: &Refs, trusted: &HashSet<Id>) -> Result<()> {
+    pub(crate) fn download(&self, store: &Store, id: Id) -> Result<Object> {
+        let response = self.request(self.http.get(self.url(&["objects", &id.to_string()])?))?;
+        let raw = read_bounded(response, MAX_OBJECT)?;
+        store.receive(id, &raw)?;
+        Object::parse(id, &raw)
+    }
+
+    fn receive(
+        &self,
+        store: &Store,
+        refs: &Refs,
+        trusted: &HashSet<Id>,
+        sparse: bool,
+    ) -> Result<()> {
         let mut seen = HashSet::new();
         let mut pending: Vec<_> = refs
             .branches
@@ -87,32 +100,38 @@ impl Remote {
             .copied()
             .collect();
         while let Some(id) = pending.pop() {
-            if trusted.contains(&id) || !seen.insert(id) {
+            if (sparse && id.kind() == Kind::Chunk) || trusted.contains(&id) || !seen.insert(id) {
                 continue;
             }
             ensure!(
                 seen.len() <= MAX_GRAPH,
                 "remote history exceeds graph limit"
             );
-            if !store.contains(id) {
-                let response =
-                    self.request(self.http.get(self.url(&["objects", &id.to_string()])?))?;
-                let raw = read_bounded(response, MAX_OBJECT)?;
-                store.receive(id, &raw)?;
-                pending.extend(Object::parse(id, &raw)?.children());
+            let object = if store.contains(id) {
+                store.object(id)?
             } else {
-                pending.extend(store.object(id)?.children());
+                self.download(store, id)?
+            };
+            if !sparse || !matches!(object, Object::File(_)) {
+                pending.extend(object.children());
             }
         }
-        store.graph_since(
-            refs.branches.values().chain(refs.tags.values()).copied(),
-            trusted,
-        )?;
+        let tips = refs.branches.values().chain(refs.tags.values()).copied();
+        if sparse {
+            store.metadata_graph(tips, trusted)?;
+        } else {
+            store.graph_since(tips, trusted)?;
+        }
         Ok(())
     }
 
-    fn send(&self, store: &Store, tip: Id, trusted: &HashSet<Id>) -> Result<()> {
-        let ids: Vec<_> = store.graph_since([tip], trusted)?.into_iter().collect();
+    fn send(&self, store: &Store, tip: Id, trusted: &HashSet<Id>, sparse: bool) -> Result<()> {
+        let ids = if sparse {
+            store.metadata_graph([tip], trusted)?
+        } else {
+            store.graph_since([tip], trusted)?
+        };
+        let ids: Vec<_> = ids.into_iter().collect();
         for batch in ids.chunks(MAX_NEGOTIATION) {
             let response =
                 self.request(self.http.post(self.url(&["missing"])?).json(&Objects {
@@ -130,7 +149,11 @@ impl Remote {
                     self.http
                         .put(self.url(&["objects", &id.to_string()])?)
                         .header("content-type", "application/octet-stream")
-                        .body(store.read(id)?),
+                        .body(store.read(id).with_context(|| {
+                            format!(
+                                "destination needs object {id}; download its content before pushing"
+                            )
+                        })?),
                 )?;
             }
         }
@@ -149,8 +172,8 @@ impl Remote {
         &self,
         path: &str,
         seconds: Option<u32>,
-    ) -> Result<Option<loki_vcs_core::protocol::Lock>> {
-        loki_vcs_core::valid_path(path)?;
+    ) -> Result<Option<skald_vcs_core::protocol::Lock>> {
+        skald_vcs_core::valid_path(path)?;
         let response = self.request(
             self.http
                 .put(self.url(&["locks"])?)
@@ -158,7 +181,7 @@ impl Remote {
         )?;
         #[derive(serde::Deserialize)]
         struct Locked {
-            lock: Option<loki_vcs_core::protocol::Lock>,
+            lock: Option<skald_vcs_core::protocol::Lock>,
         }
         let result: Locked = serde_json::from_slice(&read_bounded(response, 4096)?)?;
         Ok(result.lock)
@@ -191,7 +214,7 @@ fn validate_url(url: &str) -> Result<Url> {
     Ok(url)
 }
 
-fn fetch(state: &mut State, store: &Store, remote: &Remote, name: &str) -> Result<Refs> {
+pub(crate) fn fetch(state: &mut State, store: &Store, remote: &Remote, name: &str) -> Result<Refs> {
     let refs = remote.refs()?;
     let trusted = state
         .fetched
@@ -199,7 +222,11 @@ fn fetch(state: &mut State, store: &Store, remote: &Remote, name: &str) -> Resul
         .into_iter()
         .flat_map(|refs| refs.values().copied())
         .collect();
-    remote.receive(store, &refs, &trusted)?;
+    ensure!(
+        state.sparse.is_none() || name == "origin",
+        "sparse fetch requires origin"
+    );
+    remote.receive(store, &refs, &trusted, state.sparse.is_some())?;
     let fetched = refs
         .branches
         .iter()
@@ -214,25 +241,45 @@ fn fetch(state: &mut State, store: &Store, remote: &Remote, name: &str) -> Resul
     Ok(refs)
 }
 
-fn configured(state: &State, name: &str, token: &str) -> Result<Remote> {
+pub(crate) fn configured(state: &State, name: &str, token: &str) -> Result<Remote> {
     Remote::new(state.remotes.get(name).context("unknown remote")?, token)
 }
 
 impl Repository {
     pub fn clone_remote(destination: &Path, url: &str, token: &str) -> Result<Self> {
+        Self::clone_with_selection(destination, url, token, None)
+    }
+
+    pub fn clone_sparse(
+        destination: &Path,
+        url: &str,
+        token: &str,
+        paths: &[String],
+    ) -> Result<Self> {
+        let selection = WorkspaceSelection::from_paths(paths)?;
+        Self::clone_with_selection(destination, url, token, Some(selection))
+    }
+
+    fn clone_with_selection(
+        destination: &Path,
+        url: &str,
+        token: &str,
+        sparse: Option<WorkspaceSelection>,
+    ) -> Result<Self> {
         ensure!(!destination.exists(), "clone destination already exists");
         let parent = destination
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or(Path::new("."));
         let temp = tempfile::Builder::new()
-            .prefix(".lvcs-clone-")
+            .prefix(".skald-clone-")
             .tempdir_in(parent)?;
         let linked = Self::init(temp.path(), Settings::default())?;
         let remote = Remote::new(url, token)?;
         linked.with_state(|state, store| {
             let mut next = state.clone();
             next.remotes.insert("origin".into(), url.into());
+            next.sparse = sparse;
             let refs = fetch(&mut next, store, &remote, "origin")?;
             next.branches = refs
                 .branches
@@ -245,10 +292,10 @@ impl Repository {
             next.tags = refs.tags;
             next.head = Head::Branch(refs.default_branch);
             next.index = store.snapshot(next.tip())?;
-            linked.transition(state, store, next.index.clone(), next)
+            linked.transition(state, store, next.index.clone(), next, Some(&remote))
         })?;
         fs::rename(temp.path(), destination)?;
-        loki_vcs_core::sync_directory(parent)?;
+        skald_vcs_core::sync_directory(parent)?;
         Self::open(destination)
     }
 
@@ -260,6 +307,12 @@ impl Repository {
         reference(name)?;
         ensure!(!name.contains('/'), "remote names cannot contain slashes");
         self.with_state(|state, _| {
+            if state.sparse.is_some() && name == "origin" {
+                ensure!(
+                    state.remotes.get(name).map(String::as_str) == url,
+                    "origin supplies this sparse workspace; keep it configured"
+                );
+            }
             if let Some(url) = url {
                 validate_url(url)?;
                 if state.remotes.get(name).is_some_and(|old| old != url) {
@@ -336,7 +389,7 @@ impl Repository {
                     .chain(refs.tags.values())
                     .copied()
                     .collect();
-                remote.send(store, target, &trusted)?;
+                remote.send(store, target, &trusted, state.sparse.is_some())?;
             }
             if expected != target {
                 remote.update(tags, branch, &Update { expected, target })?;
@@ -377,6 +430,7 @@ impl Repository {
                 target,
                 author,
                 &format!("Merge {name}/{branch}"),
+                Some(&remote),
             )
         })
     }

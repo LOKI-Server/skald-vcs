@@ -1,5 +1,5 @@
-use loki_vcs_core::{Id, Kind, Revision, Tree, canonical, now, protocol::Update};
-use loki_vcs_server::{Conflict, Hosted};
+use skald_vcs_core::{Id, Kind, Revision, Tree, canonical, now, protocol::Update};
+use skald_vcs_server::{Conflict, Hosted};
 use std::sync::{Arc, Barrier};
 
 fn commit(host: &Hosted, parents: Vec<Id>, message: &str) -> Id {

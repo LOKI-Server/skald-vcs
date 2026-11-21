@@ -1,7 +1,7 @@
 
-# Loki VCS HTTPS protocol v1
+# Skald HTTPS protocol v1
 
-Remote URLs refer to a repository root, such as https://host.example/lvcs/v1/repos/REPOSITORY_ID. Append the relative routes below to that URL. Use TLS, or loopback HTTP for development. The client will not follow redirects or use URLs containing passwords, query parameters, or fragments. Metadata and write-control requests use application/json. Raw object uploads and downloads use application/octet-stream with original object payload bytes. Files can be any supported size because binary content is transferred one chunk at a time.
+Remote URLs refer to a repository root, such as https://host.example/skald/v1/repos/REPOSITORY_ID. Append the relative routes below to that URL. Use TLS, or loopback HTTP for development. The client will not follow redirects or use URLs containing passwords, query parameters, or fragments. Metadata and write-control requests use application/json. Raw object uploads and downloads use application/octet-stream with original object payload bytes. Files can be any supported size because binary content is transferred one chunk at a time.
 
 Loki requires Authorization with the Bearer scheme. An alternative host may admit public readers or use its own bearer tokens. Authorization is checked for each request. Loki's dashboard can issue revocable account tokens with read or write scope. Paired API clients can exchange their management device grant for a short-lived, repository-scoped transfer token. Both token types follow current account and repository permissions. An author string in a revision is supplied by the client and is not an authenticated account assertion.
 
@@ -9,8 +9,8 @@ Loki requires Authorization with the Bearer scheme. An alternative host may admi
 
 | Method | Path | Result |
 | --- | --- | --- |
-| GET | /lvcs/v1 | Protocol version, object and negotiation limits, advisory lock policy, clone capability, and discovery URL. |
-| GET | /lvcs/v1/repos | Visible repositories for the token. Entries include id, name, role, owner_id, and remote_url. |
+| GET | /skald/v1 | Protocol version, object and negotiation limits, advisory lock policy, clone capability, and discovery URL. |
+| GET | /skald/v1/repos | Visible repositories for the token. Entries include id, name, role, owner_id, and remote_url. |
 | GET | repository root | Version, repository identity, default_branch, effective role, and lock policy. |
 | GET | /refs | Refs object with version (1), default_branch, branches, and tags. Branches and tags map names to full revision IDs. An unborn default branch is absent from branches. |
 | GET | /history | Recent graph history, as an array of [ID, revision object] pairs under revisions. Optional branch and limit query parameters select the branch and up to 100 entries. Read revision objects from /objects to traverse all history. |
@@ -29,7 +29,7 @@ Implementations should return 400 for invalid object contents or invalid referen
 
 For a push, read /refs, build the revision closure, and batch object IDs through /missing. Send only absent payloads. The receiver verifies hashes and type invariants before making input available. Finally submit the observed reference value as expected and the proposed revision ID as target. The server validates the object graph and atomically compares and stores the new ref under the writer lock. A failed update leaves the old ref available. Upload dependencies may arrive in any order. An interrupted upload is resumed by repeating negotiation. Newly uploaded objects survive for at least 24 hours unless the repository is deleted. Object reads are scoped to the repository. Members with read permission can request an object with a known ID in that repository, including an unpublished upload.
 
-For a fetch, read /refs and traverse objects by following revision parents and tree, file, and chunk references. Reuse verified objects already in the local store. Verify the reachable closure and then save the remote-tracking refs. A complete clone downloads the closures of all advertised refs and checks out the default branch. Offline work then uses repository files only. Partial and sparse modes are unsupported in v1.
+For a fetch, read /refs and traverse objects by following revision parents and tree, file, and chunk references. Reuse verified objects already in the local store. Verify the reachable closure and then save the remote-tracking refs. A complete clone downloads the closures of all advertised refs and checks out the default branch. Offline work then uses repository files only. A sparse client traverses revisions, trees, and manifests without requesting every chunk. It requests chunks for selected paths by the same object route and verifies those payloads before materializing files. Both client modes use the same server routes and the server validates the complete object graph before publishing a ref.
 
 Advisory locks coordinate binary changes. Pushes do not enforce them. A lock is independent from access to a branch and expires without modifying the work tree or reference graph.
 

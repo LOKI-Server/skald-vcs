@@ -1,14 +1,15 @@
 mod network;
+mod workspace;
 use anyhow::{Context, Result, bail, ensure};
 use ignore::gitignore::GitignoreBuilder;
-use loki_vcs_core::text::{file_text, unified_patch};
-use loki_vcs_core::{
-    Entry, Id, Kind, Revision, Settings, Snapshot, Store, atomic_json, canonical, disk_lock, now,
-    reference, sync_directory, valid_path,
-};
 pub use network::Remote;
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
+use skald_vcs_core::text::{file_text, unified_patch};
+use skald_vcs_core::{
+    Entry, Id, Kind, Revision, Settings, Snapshot, Store, atomic_json, canonical, disk_lock, now,
+    reference, sync_directory, valid_path,
+};
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -16,6 +17,7 @@ use std::{
     path::{Component, Path, PathBuf},
     time::{Duration, SystemTime},
 };
+pub use workspace::{WorkspaceChange, WorkspaceFile, WorkspacePlan, WorkspaceSelection};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum Head {
     Branch(String),
@@ -31,10 +33,21 @@ struct State {
     settings: Settings,
     remotes: BTreeMap<String, String>,
     fetched: BTreeMap<String, BTreeMap<String, Id>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    sparse: Option<WorkspaceSelection>,
     merge_parent: Option<Id>,
     conflicts: BTreeSet<String>,
 }
 impl State {
+    fn includes(&self, path: &str) -> bool {
+        self.sparse.as_ref().is_none_or(|view| view.includes(path))
+    }
+
+    fn project(&self, mut snapshot: Snapshot) -> Snapshot {
+        snapshot.retain(|path, _| self.includes(path));
+        snapshot
+    }
+
     fn tip(&self) -> Option<Id> {
         match &self.head {
             Head::Branch(name) => self.branches[name],
@@ -114,16 +127,16 @@ impl Repository {
         settings.validate()?;
         fs::create_dir_all(path.as_ref())?;
         let root = path.as_ref().canonicalize()?;
-        let meta = root.join(".lvcs");
+        let meta = root.join(".skald");
         ensure!(!meta.exists(), "a working copy already exists here");
         let staging = tempfile::Builder::new()
-            .prefix(".lvcs-init-")
+            .prefix(".skald-init-")
             .tempdir_in(&root)?;
         Store::create(&staging.path().join("objects"), settings)?;
         atomic_json(
             &staging.path().join("state.json"),
             &State {
-                version: loki_vcs_core::VERSION,
+                version: skald_vcs_core::VERSION,
                 head: Head::Branch("main".into()),
                 branches: BTreeMap::from([("main".into(), None)]),
                 tags: BTreeMap::new(),
@@ -131,6 +144,7 @@ impl Repository {
                 settings,
                 remotes: BTreeMap::new(),
                 fetched: BTreeMap::new(),
+                sparse: None,
                 merge_parent: None,
                 conflicts: BTreeSet::new(),
             },
@@ -141,7 +155,7 @@ impl Repository {
     }
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         let root = path.as_ref().canonicalize()?;
-        let meta = root.join(".lvcs");
+        let meta = root.join(".skald");
         ensure!(
             safe_metadata(&meta)?.is_some_and(|m| m.is_dir()),
             "no working copy at {}",
@@ -154,11 +168,11 @@ impl Repository {
     pub fn discover(path: impl AsRef<Path>) -> Result<Self> {
         let root = path.as_ref().canonicalize()?;
         for dir in root.ancestors() {
-            if safe_metadata(&dir.join(".lvcs"))?.is_some() {
+            if safe_metadata(&dir.join(".skald"))?.is_some() {
                 return Self::open(dir);
             }
         }
-        bail!("no .lvcs working copy found");
+        bail!("no .skald working copy found");
     }
     pub fn root(&self) -> &Path {
         &self.root
@@ -169,7 +183,7 @@ impl Repository {
             .read_meta("state.json")?
             .context("missing working copy metadata")?;
         ensure!(
-            state.version == loki_vcs_core::VERSION,
+            state.version == skald_vcs_core::VERSION,
             "unsupported working copy version"
         );
         ensure!(
@@ -208,10 +222,20 @@ impl Repository {
         self.with_state(|state, store| {
             let mut tracked = store.snapshot(state.tip())?;
             tracked.extend(state.index.clone());
-            let files = self.scan(&tracked, paths)?;
-            state
-                .index
-                .retain(|p, _| !paths.iter().any(|sel| selected(p, sel)));
+            if let Some(view) = &state.sparse {
+                for path in paths {
+                    ensure!(
+                        path == "." || view.may_include(path),
+                        "path is outside the workspace selection: {path}"
+                    );
+                }
+            }
+            let files = self.scan(&tracked, paths, state.sparse.as_ref(), true)?;
+            let view = state.sparse.as_ref();
+            state.index.retain(|p, _| {
+                !view.is_none_or(|view| view.includes(p))
+                    || !paths.iter().any(|sel| selected(p, sel))
+            });
             for (path, metadata) in files {
                 let mut entry = self.capture(store, &path, &metadata)?;
                 if !cfg!(unix)
@@ -300,10 +324,12 @@ impl Repository {
         &self,
         tracked: &Snapshot,
         selections: &[String],
+        view: Option<&WorkspaceSelection>,
+        respect_ignore: bool,
     ) -> Result<BTreeMap<String, fs::Metadata>> {
         let mut ignore = GitignoreBuilder::new(&self.root);
-        let ignore_file = self.root.join(".lvcsignore");
-        if safe_metadata(&ignore_file)?.is_some_and(|m| m.is_file()) {
+        let ignore_file = self.root.join(".skaldignore");
+        if respect_ignore && safe_metadata(&ignore_file)?.is_some_and(|m| m.is_file()) {
             if let Some(error) = ignore.add(ignore_file) {
                 return Err(error.into());
             }
@@ -322,7 +348,7 @@ impl Repository {
         while let Some(path) = pending.pop_first() {
             visited += 1;
             ensure!(
-                visited <= loki_vcs_core::MAX_FILES * 2,
+                visited <= skald_vcs_core::MAX_FILES * 2,
                 "working tree exceeds scan limit"
             );
             let relative = path.strip_prefix(&self.root)?;
@@ -334,18 +360,21 @@ impl Repository {
             }
             if relative
                 .components()
-                .any(|p| p.as_os_str().eq_ignore_ascii_case(".lvcs"))
+                .any(|p| p.as_os_str().eq_ignore_ascii_case(".skald"))
                 || relative
                     .components()
                     .next()
-                    .is_some_and(|p| p.as_os_str().to_string_lossy().starts_with(".lvcs-"))
+                    .is_some_and(|p| p.as_os_str().to_string_lossy().starts_with(".skald-"))
             {
+                continue;
+            }
+            let name = portable(relative)?;
+            if view.is_some_and(|view| !view.may_include(&name)) {
                 continue;
             }
             let Some(metadata) = safe_metadata(&path)? else {
                 continue;
             };
-            let name = portable(relative)?;
             if ignore
                 .matched_path_or_any_parents(relative, metadata.is_dir())
                 .is_ignore()
@@ -362,7 +391,7 @@ impl Repository {
                 for child in fs::read_dir(&path)? {
                     pending.insert(child?.path());
                 }
-            } else if metadata.is_file() {
+            } else if metadata.is_file() && view.is_none_or(|view| view.includes(&name)) {
                 files.insert(name, metadata);
             }
         }
@@ -379,7 +408,7 @@ impl Repository {
         let base = store.snapshot(state.tip())?;
         let mut tracked = base.clone();
         tracked.extend(state.index.clone());
-        let files = self.scan(&tracked, &[".".into()])?;
+        let files = self.scan(&tracked, &[".".into()], state.sparse.as_ref(), true)?;
         let cache: StatusCache = if refresh {
             BTreeMap::new()
         } else {
@@ -414,7 +443,11 @@ impl Repository {
             // The cache is disposable. Failing to write it does not affect the working copy.
             let _ = atomic_json(&self.meta.join("status.json"), &next);
         }
-        for path in state.index.keys().filter(|p| !files.contains_key(*p)) {
+        for path in state
+            .index
+            .keys()
+            .filter(|p| state.includes(p) && !files.contains_key(*p))
+        {
             unstaged.insert(path.clone(), "deleted");
         }
         Ok(Status {
@@ -554,7 +587,17 @@ impl Repository {
         })
     }
     pub fn checkout(&self, target: &str, detach: bool) -> Result<()> {
+        self.checkout_with_token(target, detach, None)
+    }
+
+    pub fn checkout_with_token(
+        &self,
+        target: &str,
+        detach: bool,
+        token: Option<&str>,
+    ) -> Result<()> {
         self.with_state(|state, store| {
+            let remote = state.content_remote(token)?;
             let mut next = state.clone();
             next.head = if detach {
                 Head::Detached(resolve(state, store, target)?)
@@ -563,15 +606,29 @@ impl Repository {
                 Head::Branch(target.into())
             };
             next.index = store.snapshot(next.tip())?;
-            self.transition(state, store, next.index.clone(), next)
+            self.transition(state, store, next.index.clone(), next, remote.as_ref())
         })
     }
     pub fn restore(&self, revision: &str, paths: &[String]) -> Result<()> {
+        self.restore_with_token(revision, paths, None)
+    }
+
+    pub fn restore_with_token(
+        &self,
+        revision: &str,
+        paths: &[String],
+        token: Option<&str>,
+    ) -> Result<()> {
         self.with_state(|state, store| {
+            let remote = state.content_remote(token)?;
             let source = store.snapshot(Some(resolve(state, store, revision)?))?;
             let mut working = state.index.clone();
             for path in paths {
                 valid_path(path)?;
+                ensure!(
+                    state.includes(path),
+                    "add {path} to the workspace selection first"
+                );
                 let entry = source
                     .get(path)
                     .context("path does not exist in revision")?;
@@ -586,12 +643,13 @@ impl Repository {
             self.apply_checkout(
                 store,
                 Checkout {
-                    old: state.index.clone(),
-                    new: working,
+                    old: state.project(state.index.clone()),
+                    new: state.project(working),
                     state: state.clone(),
                 },
                 true,
                 paths,
+                remote.as_ref(),
             )
         })
     }
@@ -601,6 +659,7 @@ impl Repository {
         store: &Store,
         working: Snapshot,
         after: State,
+        remote: Option<&Remote>,
     ) -> Result<()> {
         ensure!(
             before.merge_parent.is_none(),
@@ -613,12 +672,13 @@ impl Repository {
         self.apply_checkout(
             store,
             Checkout {
-                old: before.index.clone(),
-                new: working,
+                old: before.project(before.index.clone()),
+                new: after.project(working),
                 state: after,
             },
             false,
             &[],
+            remote,
         )
     }
     fn apply_checkout(
@@ -627,6 +687,7 @@ impl Repository {
         mut journal: Checkout,
         overwrite: bool,
         paths: &[String],
+        remote: Option<&Remote>,
     ) -> Result<()> {
         let changed: BTreeSet<_> = journal
             .old
@@ -650,7 +711,9 @@ impl Repository {
                             "local changes would be overwritten: {path}"
                         );
                     } else if metadata.is_dir() {
-                        for (file, _) in self.scan(&journal.old, std::slice::from_ref(path))? {
+                        for (file, _) in
+                            self.scan(&journal.old, std::slice::from_ref(path), None, true)?
+                        {
                             ensure!(
                                 journal.old.contains_key(&file),
                                 "untracked path would be overwritten: {file}"
@@ -677,6 +740,9 @@ impl Repository {
                 }
                 ancestor = dir.parent();
             }
+        }
+        if journal.state.sparse.is_some() {
+            workspace::hydrate(store, journal.new.values().map(|e| e.id), remote)?;
         }
         store.graph(journal.new.values().map(|e| e.id))?;
         atomic_json(&self.meta.join("checkout.json"), &journal)?;
@@ -752,7 +818,7 @@ impl Repository {
                 .map(|r| resolve(state, store, r))
                 .transpose()?
                 .or(state.tip());
-            store.history(root, limit.min(loki_vcs_core::MAX_GRAPH))
+            store.history(root, limit.min(skald_vcs_core::MAX_GRAPH))
         })
     }
     pub fn diff(
@@ -762,7 +828,7 @@ impl Repository {
         staged: bool,
     ) -> Result<Vec<Difference>> {
         self.with_state(|state, store| {
-            let base = if let Some(from) = from {
+            let mut base = if let Some(from) = from {
                 store.snapshot(Some(resolve(state, store, from)?))?
             } else if staged || to.is_some() {
                 store.snapshot(state.tip())?
@@ -774,8 +840,11 @@ impl Repository {
             } else if staged {
                 state.index.clone()
             } else {
+                base = state.project(base);
                 let mut target = Snapshot::new();
-                for (path, metadata) in self.scan(&state.index, &[".".into()])? {
+                for (path, metadata) in
+                    self.scan(&state.index, &[".".into()], state.sparse.as_ref(), true)?
+                {
                     let entry = match state.index.get(&path) {
                         Some(entry) if self.matches(store, &path, &metadata, *entry)? => *entry,
                         _ => self.capture(store, &path, &metadata)?,
@@ -787,8 +856,16 @@ impl Repository {
             changes(&base, &target)
                 .into_iter()
                 .map(|(path, change)| {
-                    let a = file_text(store, base.get(&path).copied())?;
-                    let b = file_text(store, target.get(&path).copied())?;
+                    let a = workspace::cached_text(
+                        store,
+                        base.get(&path).copied(),
+                        state.sparse.is_some(),
+                    )?;
+                    let b = workspace::cached_text(
+                        store,
+                        target.get(&path).copied(),
+                        state.sparse.is_some(),
+                    )?;
                     let patch = a.zip(b).map(|(a, b)| unified_patch(&path, &a, &b));
                     Ok(Difference {
                         path,
@@ -800,9 +877,20 @@ impl Repository {
         })
     }
     pub fn merge(&self, revision: &str, author: &str, message: &str) -> Result<Merge> {
+        self.merge_with_token(revision, author, message, None)
+    }
+
+    pub fn merge_with_token(
+        &self,
+        revision: &str,
+        author: &str,
+        message: &str,
+        token: Option<&str>,
+    ) -> Result<Merge> {
         self.with_state(|state, store| {
             let theirs = resolve(state, store, revision)?;
-            self.merge_tip(state, store, theirs, author, message)
+            let remote = state.content_remote(token)?;
+            self.merge_tip(state, store, theirs, author, message, remote.as_ref())
         })
     }
     fn merge_tip(
@@ -812,6 +900,7 @@ impl Repository {
         theirs: Id,
         author: &str,
         message: &str,
+        remote: Option<&Remote>,
     ) -> Result<Merge> {
         let Head::Branch(name) = &state.head else {
             bail!("switch to a branch before merging")
@@ -829,7 +918,7 @@ impl Repository {
         if ours.is_none() || store.is_ancestor(ours.unwrap(), theirs)? {
             next.branches.insert(name.clone(), Some(theirs));
             next.index = store.snapshot(Some(theirs))?;
-            self.transition(state, store, next.index.clone(), next)?;
+            self.transition(state, store, next.index.clone(), next, remote)?;
             return Ok(Merge {
                 revision: Some(theirs),
                 conflicts: BTreeSet::new(),
@@ -857,6 +946,18 @@ impl Repository {
             } else if a == b {
                 c
             } else if let (Some(b), Some(a), Some(c)) = (b, a, c) {
+                if state.sparse.is_some() {
+                    let ids = [b.id, a.id, c.id];
+                    // If any side exceeds the text limit we already know this needs resolution.
+                    let sizes = ids.map(|id| store.manifest(id).map(|manifest| manifest.size));
+                    let [base_size, ours_size, theirs_size] = sizes;
+                    if [base_size?, ours_size?, theirs_size?]
+                        .into_iter()
+                        .all(|size| size <= skald_vcs_core::text::TEXT_LIMIT as u64)
+                    {
+                        workspace::hydrate(store, ids, remote)?;
+                    }
+                }
                 match merge_text(store, b, a, c)? {
                     Some(entry) => Some(entry),
                     None => {
@@ -890,14 +991,31 @@ impl Repository {
             )?;
             next.branches.insert(name.clone(), Some(id));
             next.merge_parent = None;
-            self.transition(state, store, working, next)?;
+            self.transition(state, store, working, next, remote)?;
             return Ok(Merge {
                 revision: Some(id),
                 conflicts: BTreeSet::new(),
             });
         }
         let conflicts = next.conflicts.clone();
-        self.transition(state, store, working, next)?;
+        if let Some(view) = &mut next.sparse {
+            for path in &conflicts {
+                if !view.includes(path) {
+                    view.set_rule(path, true);
+                }
+            }
+        }
+        // Abort may need the pre-merge versions even when a conflict was outside the old view.
+        if next.sparse.is_some() {
+            workspace::hydrate(
+                store,
+                conflicts
+                    .iter()
+                    .filter_map(|p| left.get(p).map(|entry| entry.id)),
+                remote,
+            )?;
+        }
+        self.transition(state, store, working, next, remote)?;
         Ok(Merge {
             revision: None,
             conflicts,
@@ -913,20 +1031,34 @@ impl Repository {
             self.apply_checkout(
                 store,
                 Checkout {
-                    old: state.index.clone(),
-                    new: next.index.clone(),
+                    old: state.project(state.index.clone()),
+                    new: next.project(next.index.clone()),
                     state: next,
                 },
                 false,
                 &[],
+                None,
             )
         })
     }
     pub fn verify(&self) -> Result<()> {
-        self.with_state(|state, store| store.verify(roots(state)))
+        self.with_state(|state, store| {
+            if state.sparse.is_some() {
+                self.verify_sparse(state, store)
+            } else {
+                store.verify(roots(state))
+            }
+        })
     }
     pub fn gc(&self, grace: Duration) -> Result<usize> {
-        self.with_state(|state, store| store.collect(roots(state), grace))
+        self.with_state(|state, store| {
+            if state.sparse.is_some() {
+                let live = store.metadata_graph(roots(state), &Default::default())?;
+                store.collect_except(&live, grace)
+            } else {
+                store.collect(roots(state), grace)
+            }
+        })
     }
 }
 fn roots(state: &State) -> Vec<Id> {
@@ -1031,7 +1163,7 @@ fn check_replace_dir(dir: &Path, prefix: &str, old: &Snapshot) -> Result<()> {
         );
         let m = safe_metadata(&child.path())?.context("directory changed during checkout")?;
         ensure!(
-            key.split('/').count() <= loki_vcs_core::MAX_DEPTH,
+            key.split('/').count() <= skald_vcs_core::MAX_DEPTH,
             "directory exceeds checkout depth"
         );
         if m.is_dir() {
@@ -1089,8 +1221,8 @@ fn changes(base: &Snapshot, target: &Snapshot) -> BTreeMap<String, &'static str>
         .collect()
 }
 fn merge_base(store: &Store, ours: Id, theirs: Id) -> Result<Id> {
-    let ours = store.history([ours], loki_vcs_core::MAX_GRAPH)?;
-    let theirs = store.history([theirs], loki_vcs_core::MAX_GRAPH)?;
+    let ours = store.history([ours], skald_vcs_core::MAX_GRAPH)?;
+    let theirs = store.history([theirs], skald_vcs_core::MAX_GRAPH)?;
     let ours: BTreeSet<_> = ours.into_iter().map(|(id, _)| id).collect();
     let mut candidates = BTreeSet::new();
     let mut ancestors = BTreeSet::new();
@@ -1109,6 +1241,11 @@ fn merge_base(store: &Store, ours: Id, theirs: Id) -> Result<Id> {
     Ok(base)
 }
 fn merge_text(store: &Store, base: Entry, ours: Entry, theirs: Entry) -> Result<Option<Entry>> {
+    for entry in [base, ours, theirs] {
+        if store.manifest(entry.id)?.size > skald_vcs_core::text::TEXT_LIMIT as u64 {
+            return Ok(None);
+        }
+    }
     let (Some(base_text), Some(ours_text), Some(theirs_text)) = (
         file_text(store, Some(base))?,
         file_text(store, Some(ours))?,

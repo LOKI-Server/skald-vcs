@@ -1,8 +1,8 @@
 #![allow(clippy::missing_safety_doc)]
 //! See the public header and the native integration guide for pointer contracts.
 use anyhow::{Result, ensure};
-use loki_vcs_client::Repository;
-use loki_vcs_core::Settings;
+use skald_vcs_client::Repository;
+use skald_vcs_core::Settings;
 use std::{
     cell::RefCell,
     ffi::{CStr, CString, c_char},
@@ -11,13 +11,13 @@ use std::{
     ptr,
 };
 
-pub const LVCS_OK: i32 = 0;
-pub const LVCS_ERROR: i32 = 1;
-pub const LVCS_INVALID_ARGUMENT: i32 = 2;
-pub const LVCS_PANIC: i32 = 3;
-pub const LVCS_CONFLICT: i32 = 4;
+pub const SKALD_OK: i32 = 0;
+pub const SKALD_ERROR: i32 = 1;
+pub const SKALD_INVALID_ARGUMENT: i32 = 2;
+pub const SKALD_PANIC: i32 = 3;
+pub const SKALD_CONFLICT: i32 = 4;
 
-pub struct LvcsRepo {
+pub struct SkaldRepo {
     _private: (),
 }
 
@@ -39,7 +39,7 @@ fn set_error(message: String) {
 fn call(action: impl FnOnce() -> Result<i32>) -> i32 {
     match catch_unwind(AssertUnwindSafe(action)) {
         Ok(Ok(code)) => {
-            set_error(if code == LVCS_CONFLICT {
+            set_error(if code == SKALD_CONFLICT {
                 "Merge conflicts require resolution.".into()
             } else {
                 String::new()
@@ -48,21 +48,21 @@ fn call(action: impl FnOnce() -> Result<i32>) -> i32 {
         }
         Ok(Err(error)) => {
             let code = if error.is::<Argument>() {
-                LVCS_INVALID_ARGUMENT
+                SKALD_INVALID_ARGUMENT
             } else {
-                LVCS_ERROR
+                SKALD_ERROR
             };
             set_error(format!("{error:#}"));
             code
         }
         Err(_) => {
-            set_error("Loki VCS encountered an internal panic.".into());
-            LVCS_PANIC
+            set_error("Skald encountered an internal panic.".into());
+            SKALD_PANIC
         }
     }
 }
 
-unsafe fn repo<'a>(handle: *const LvcsRepo) -> Result<&'a Repository> {
+unsafe fn repo<'a>(handle: *const SkaldRepo) -> Result<&'a Repository> {
     unsafe { handle.cast::<Repository>().as_ref() }.ok_or_else(|| Argument.into())
 }
 
@@ -102,65 +102,65 @@ fn flag(value: u8) -> Result<bool> {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lvcs_abi_version() -> u32 {
+pub extern "C" fn skald_abi_version() -> u32 {
     1
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn lvcs_last_error() -> *const c_char {
+pub extern "C" fn skald_last_error() -> *const c_char {
     ERROR.with(|error| error.borrow().as_ptr())
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_repo_free(handle: *mut LvcsRepo) {
+pub unsafe extern "C" fn skald_repo_free(handle: *mut SkaldRepo) {
     let _ = call(|| {
         if !handle.is_null() {
             unsafe {
                 drop(Box::from_raw(handle.cast::<Repository>()));
             }
         }
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     });
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_string_free(value: *mut c_char) {
+pub unsafe extern "C" fn skald_string_free(value: *mut c_char) {
     let _ = call(|| {
         if !value.is_null() {
             unsafe {
                 drop(CString::from_raw(value));
             }
         }
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     });
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_init(path: *const c_char, out: *mut *mut LvcsRepo) -> i32 {
+pub unsafe extern "C" fn skald_init(path: *const c_char, out: *mut *mut SkaldRepo) -> i32 {
     call(|| unsafe {
         output(out)?;
         let repo = Repository::init(string(path)?, Settings::default())?;
         out.write(Box::into_raw(Box::new(repo)).cast());
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_open(path: *const c_char, out: *mut *mut LvcsRepo) -> i32 {
+pub unsafe extern "C" fn skald_open(path: *const c_char, out: *mut *mut SkaldRepo) -> i32 {
     call(|| unsafe {
         output(out)?;
         let repo = Repository::open(string(path)?)?;
         out.write(Box::into_raw(Box::new(repo)).cast());
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_clone(
+pub unsafe extern "C" fn skald_clone(
     path: *const c_char,
     url: *const c_char,
     token: *const c_char,
-    out: *mut *mut LvcsRepo,
+    out: *mut *mut SkaldRepo,
 ) -> i32 {
     call(|| unsafe {
         output(out)?;
@@ -170,29 +170,29 @@ pub unsafe extern "C" fn lvcs_clone(
             optional(token)?.unwrap_or(""),
         )?;
         out.write(Box::into_raw(Box::new(repo)).cast());
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_stage(handle: *const LvcsRepo, path: *const c_char) -> i32 {
+pub unsafe extern "C" fn skald_stage(handle: *const SkaldRepo, path: *const c_char) -> i32 {
     call(|| unsafe {
         repo(handle)?.stage(&[string(path)?.to_owned()])?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_unstage(handle: *const LvcsRepo, path: *const c_char) -> i32 {
+pub unsafe extern "C" fn skald_unstage(handle: *const SkaldRepo, path: *const c_char) -> i32 {
     call(|| unsafe {
         repo(handle)?.unstage(&[string(path)?.to_owned()])?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_commit(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_commit(
+    handle: *const SkaldRepo,
     author: *const c_char,
     message: *const c_char,
     out: *mut *mut c_char,
@@ -205,22 +205,22 @@ pub unsafe extern "C" fn lvcs_commit(
                 .commit(string(author)?, string(message)?)?
                 .to_string(),
         )?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_status(handle: *const LvcsRepo, out_json: *mut *mut c_char) -> i32 {
+pub unsafe extern "C" fn skald_status(handle: *const SkaldRepo, out_json: *mut *mut c_char) -> i32 {
     call(|| unsafe {
         output(out_json)?;
         put(out_json, serde_json::to_string(&repo(handle)?.status()?)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_history(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_history(
+    handle: *const SkaldRepo,
     revision: *const c_char,
     limit: u32,
     out_json: *mut *mut c_char,
@@ -231,58 +231,61 @@ pub unsafe extern "C" fn lvcs_history(
             out_json,
             serde_json::to_string(&repo(handle)?.history(optional(revision)?, limit as usize)?)?,
         )?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_branches(handle: *const LvcsRepo, out_json: *mut *mut c_char) -> i32 {
+pub unsafe extern "C" fn skald_branches(
+    handle: *const SkaldRepo,
+    out_json: *mut *mut c_char,
+) -> i32 {
     call(|| unsafe {
         output(out_json)?;
         put(out_json, serde_json::to_string(&repo(handle)?.branches()?)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_branch(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_branch(
+    handle: *const SkaldRepo,
     name: *const c_char,
     from: *const c_char,
 ) -> i32 {
     call(|| unsafe {
         repo(handle)?.branch(string(name)?, optional(from)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_branch_delete(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_branch_delete(
+    handle: *const SkaldRepo,
     name: *const c_char,
     force: u8,
 ) -> i32 {
     call(|| unsafe {
         repo(handle)?.delete_branch(string(name)?, flag(force)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_checkout(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_checkout(
+    handle: *const SkaldRepo,
     target: *const c_char,
     detach: u8,
 ) -> i32 {
     call(|| unsafe {
         repo(handle)?.checkout(string(target)?, flag(detach)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_merge(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_merge(
+    handle: *const SkaldRepo,
     target: *const c_char,
     author: *const c_char,
     message: *const c_char,
@@ -293,36 +296,36 @@ pub unsafe extern "C" fn lvcs_merge(
         let result = repo(handle)?.merge(string(target)?, string(author)?, string(message)?)?;
         put(out_json, serde_json::to_string(&result)?)?;
         Ok(if result.conflicts.is_empty() {
-            LVCS_OK
+            SKALD_OK
         } else {
-            LVCS_CONFLICT
+            SKALD_CONFLICT
         })
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_merge_abort(handle: *const LvcsRepo) -> i32 {
+pub unsafe extern "C" fn skald_merge_abort(handle: *const SkaldRepo) -> i32 {
     call(|| unsafe {
         repo(handle)?.abort_merge()?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_remote(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_remote(
+    handle: *const SkaldRepo,
     name: *const c_char,
     url: *const c_char,
 ) -> i32 {
     call(|| unsafe {
         repo(handle)?.remote(string(name)?, optional(url)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_fetch(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_fetch(
+    handle: *const SkaldRepo,
     remote: *const c_char,
     token: *const c_char,
     out_json: *mut *mut c_char,
@@ -331,13 +334,13 @@ pub unsafe extern "C" fn lvcs_fetch(
         output(out_json)?;
         let refs = repo(handle)?.fetch(string(remote)?, optional(token)?.unwrap_or(""))?;
         put(out_json, serde_json::to_string(&refs)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_push(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_push(
+    handle: *const SkaldRepo,
     remote: *const c_char,
     token: *const c_char,
     name: *const c_char,
@@ -352,13 +355,13 @@ pub unsafe extern "C" fn lvcs_push(
             flag(tags)?,
             flag(delete)?,
         )?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_pull(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_pull(
+    handle: *const SkaldRepo,
     remote: *const c_char,
     token: *const c_char,
     branch: *const c_char,
@@ -375,36 +378,36 @@ pub unsafe extern "C" fn lvcs_pull(
         )?;
         put(out_json, serde_json::to_string(&result)?)?;
         Ok(if result.conflicts.is_empty() {
-            LVCS_OK
+            SKALD_OK
         } else {
-            LVCS_CONFLICT
+            SKALD_CONFLICT
         })
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_verify(handle: *const LvcsRepo) -> i32 {
+pub unsafe extern "C" fn skald_verify(handle: *const SkaldRepo) -> i32 {
     call(|| unsafe {
         repo(handle)?.verify()?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_restore(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_restore(
+    handle: *const SkaldRepo,
     revision: *const c_char,
     path: *const c_char,
 ) -> i32 {
     call(|| unsafe {
         repo(handle)?.restore(string(revision)?, &[string(path)?.to_owned()])?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_diff(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_diff(
+    handle: *const SkaldRepo,
     from: *const c_char,
     to: *const c_char,
     staged: u8,
@@ -414,37 +417,40 @@ pub unsafe extern "C" fn lvcs_diff(
         output(out_json)?;
         let diff = repo(handle)?.diff(optional(from)?, optional(to)?, flag(staged)?)?;
         put(out_json, serde_json::to_string(&diff)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_tags(handle: *const LvcsRepo, out_json: *mut *mut c_char) -> i32 {
+pub unsafe extern "C" fn skald_tags(handle: *const SkaldRepo, out_json: *mut *mut c_char) -> i32 {
     call(|| unsafe {
         output(out_json)?;
         put(out_json, serde_json::to_string(&repo(handle)?.tags()?)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_tag(
-    handle: *const LvcsRepo,
+pub unsafe extern "C" fn skald_tag(
+    handle: *const SkaldRepo,
     name: *const c_char,
     from: *const c_char,
     delete: u8,
 ) -> i32 {
     call(|| unsafe {
         repo(handle)?.tag(string(name)?, optional(from)?, flag(delete)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }
 
 #[unsafe(no_mangle)]
-pub unsafe extern "C" fn lvcs_remotes(handle: *const LvcsRepo, out_json: *mut *mut c_char) -> i32 {
+pub unsafe extern "C" fn skald_remotes(
+    handle: *const SkaldRepo,
+    out_json: *mut *mut c_char,
+) -> i32 {
     call(|| unsafe {
         output(out_json)?;
         put(out_json, serde_json::to_string(&repo(handle)?.remotes()?)?)?;
-        Ok(LVCS_OK)
+        Ok(SKALD_OK)
     })
 }

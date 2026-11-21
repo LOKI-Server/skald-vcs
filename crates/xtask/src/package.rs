@@ -22,7 +22,7 @@ pub struct Options {
     #[arg(long, default_value = "dist")]
     output: PathBuf,
     /// Validate a release tag against the workspace version.
-    #[arg(long, env = "LVCS_RELEASE_TAG")]
+    #[arg(long, env = "SKALD_RELEASE_TAG")]
     tag: Option<String>,
 }
 
@@ -48,18 +48,18 @@ impl Target {
         );
         Ok(match platform {
             "pc-windows-msvc" => Self {
-                executable: "lvcs.exe",
-                libraries: &["loki_vcs.dll", "loki_vcs.dll.lib", "loki_vcs.lib"],
+                executable: "skald.exe",
+                libraries: &["skald_vcs.dll", "skald_vcs.dll.lib", "skald_vcs.lib"],
                 format: Format::Zip,
             },
             "apple-darwin" => Self {
-                executable: "lvcs",
-                libraries: &["libloki_vcs.dylib", "libloki_vcs.a"],
+                executable: "skald",
+                libraries: &["libskald_vcs.dylib", "libskald_vcs.a"],
                 format: Format::Tar,
             },
             "unknown-linux-gnu" | "unknown-linux-musl" => Self {
-                executable: "lvcs",
-                libraries: &["libloki_vcs.so", "libloki_vcs.a"],
+                executable: "skald",
+                libraries: &["libskald_vcs.so", "libskald_vcs.a"],
                 format: Format::Tar,
             },
             _ => bail!("unsupported target {triple}"),
@@ -123,7 +123,7 @@ impl Release {
         target: Target,
         build: &Path,
     ) -> Result<Self> {
-        let name = format!("loki-vcs-{version}-{triple}");
+        let name = format!("skald-vcs-{version}-{triple}");
         let mut entries = vec![
             Entry::directory(&name),
             Entry::directory(&format!("{name}/bin")),

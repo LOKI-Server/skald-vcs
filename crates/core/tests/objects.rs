@@ -1,4 +1,4 @@
-use loki_vcs_core::{
+use skald_vcs_core::{
     Id, Kind, MAX_OBJECT, Manifest, Object, Settings, Store, canonical, valid_path,
 };
 use std::{collections::HashSet, fs, io::Cursor};
@@ -69,7 +69,7 @@ fn rejects_corruption_and_malformed_metadata() {
         "a/../b",
         "a\\b",
         "CON.txt",
-        "a/.LVCS/x",
+        "a/.SKALD/x",
         "a//b",
         "d /x",
         "/root",
@@ -81,7 +81,7 @@ fn rejects_corruption_and_malformed_metadata() {
 
 #[test]
 fn parser_round_trips_generated_manifests_and_rejects_mutations() {
-    use loki_vcs_core::Chunk;
+    use skald_vcs_core::Chunk;
     for length in 1..=128u32 {
         let chunks: Vec<_> = (1..=length)
             .map(|size| Chunk {

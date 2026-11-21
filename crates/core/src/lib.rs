@@ -181,8 +181,8 @@ pub fn component(name: &str) -> Result<()> {
             && name.nfc().eq(name.chars())
             && name != "."
             && name != ".."
-            && !name.to_ascii_lowercase().starts_with(".lvcs-")
-            && !name.eq_ignore_ascii_case(".lvcs")
+            && !name.to_ascii_lowercase().starts_with(".skald-")
+            && !name.eq_ignore_ascii_case(".skald")
             && !name
                 .as_bytes()
                 .windows(2)
@@ -641,6 +641,24 @@ impl Store {
         roots: impl IntoIterator<Item = Id>,
         trusted: &HashSet<Id>,
     ) -> Result<HashSet<Id>> {
+        self.walk_graph(roots, trusted, ChunkRead::Required)
+    }
+
+    /// Verify metadata and enumerate all referenced IDs without reading chunk payloads.
+    pub fn metadata_graph(
+        &self,
+        roots: impl IntoIterator<Item = Id>,
+        trusted: &HashSet<Id>,
+    ) -> Result<HashSet<Id>> {
+        self.walk_graph(roots, trusted, ChunkRead::Skip)
+    }
+
+    fn walk_graph(
+        &self,
+        roots: impl IntoIterator<Item = Id>,
+        trusted: &HashSet<Id>,
+        chunks: ChunkRead,
+    ) -> Result<HashSet<Id>> {
         let mut seen = HashSet::new();
         let mut queued = HashSet::new();
         let mut pending = Vec::new();
@@ -657,6 +675,16 @@ impl Store {
         }
         while let Some(id) = pending.pop() {
             seen.insert(id);
+            if id.kind() == Kind::Chunk {
+                let skip = match chunks {
+                    ChunkRead::Required => false,
+                    ChunkRead::Cached => !self.contains(id),
+                    ChunkRead::Skip => true,
+                };
+                if skip {
+                    continue;
+                }
+            }
             let (raw, object) = self.read_verified(id)?;
             match object {
                 Object::Chunk => check_size(&mut sizes, id, raw.len() as u32)?,
@@ -776,6 +804,11 @@ impl Store {
     /// Caller must hold the same writer lock used when creating objects and modifying roots.
     pub fn collect(&self, roots: impl IntoIterator<Item = Id>, grace: Duration) -> Result<usize> {
         let live = self.graph(roots)?;
+        self.collect_except(&live, grace)
+    }
+
+    /// Collect objects outside a caller-verified keep set under the writer lock.
+    pub fn collect_except(&self, live: &HashSet<Id>, grace: Duration) -> Result<usize> {
         let mut removed = 0;
         for id in self.object_ids()? {
             if !live.contains(&id)
@@ -793,7 +826,17 @@ impl Store {
     }
 
     pub fn verify(&self, roots: impl IntoIterator<Item = Id>) -> Result<()> {
-        let reachable = self.graph(roots)?;
+        self.verify_objects(&self.graph(roots)?)
+    }
+
+    /// Verify reachable metadata and cached chunks, allowing missing history payloads.
+    /// A sparse client must separately verify the full closure of materialized files.
+    pub fn verify_cached(&self, roots: impl IntoIterator<Item = Id>) -> Result<()> {
+        let reachable = self.walk_graph(roots, &HashSet::new(), ChunkRead::Cached)?;
+        self.verify_objects(&reachable)
+    }
+
+    fn verify_objects(&self, reachable: &HashSet<Id>) -> Result<()> {
         for id in self.object_ids()? {
             if !reachable.contains(&id) {
                 self.read(id)?;
@@ -801,6 +844,12 @@ impl Store {
         }
         Ok(())
     }
+}
+
+enum ChunkRead {
+    Required,
+    Cached,
+    Skip,
 }
 
 fn check_size(sizes: &mut HashMap<Id, u32>, id: Id, size: u32) -> Result<()> {

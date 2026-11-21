@@ -1,6 +1,6 @@
 [package]
-name = "loki-vcs-core"
-description = "Object format and storage engine for Loki VCS"
+name = "skald-vcs-core"
+description = "Object format and storage engine for Skald"
 version.workspace = true
 edition.workspace = true
 license.workspace = true

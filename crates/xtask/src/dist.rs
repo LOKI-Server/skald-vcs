@@ -25,7 +25,7 @@ pub fn run(root: &Path, version: &str, target: Option<String>) -> Result<(PathBu
             "--target-dir",
         ])
         .arg(&target_dir)
-        .args(["-p", "loki-vcs-cli", "-p", "loki-vcs-ffi"])
+        .args(["-p", "skald-vcs-cli", "-p", "skald-vcs-ffi"])
         .status()
         .context("could not start the release build")?;
     ensure!(status.success(), "release build failed for {triple}");
@@ -40,7 +40,7 @@ pub fn run(root: &Path, version: &str, target: Option<String>) -> Result<(PathBu
     let dist = target_dir.join("dist");
     fs::create_dir_all(&dist)?;
     let stage = tempfile::Builder::new()
-        .prefix(".lvcs-dist-")
+        .prefix(".skald-dist-")
         .tempdir_in(&dist)?;
     let next = stage.path().join("next");
     fs::create_dir(&next)?;
