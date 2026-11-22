@@ -1,7 +1,7 @@
 #![allow(clippy::missing_safety_doc)]
 //! See the public header and the native integration guide for pointer contracts.
 use anyhow::{Result, ensure};
-use skald_vcs_client::Repository;
+use skald_vcs_core::client::Repository;
 use skald_vcs_core::Settings;
 use std::{
     cell::RefCell,

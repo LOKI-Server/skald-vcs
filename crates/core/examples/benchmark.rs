@@ -1,5 +1,5 @@
 use anyhow::{Context, Result, ensure};
-use skald_vcs_client::Repository;
+use skald_vcs_core::client::Repository;
 use skald_vcs_core::{Id, Settings, Store};
 use std::{
     collections::HashSet,

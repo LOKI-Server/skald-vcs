@@ -6,4 +6,4 @@ dist target="":
 
 # Run the workspace tests.
 test:
-    cargo test --locked --workspace
+    cargo test --locked --workspace --all-features

@@ -5,8 +5,8 @@ use ignore::gitignore::GitignoreBuilder;
 pub use network::Remote;
 use serde::{Deserialize, Serialize};
 use similar::TextDiff;
-use skald_vcs_core::text::{file_text, unified_patch};
-use skald_vcs_core::{
+use crate::text::{file_text, unified_patch};
+use crate::{
     Entry, Id, Kind, Revision, Settings, Snapshot, Store, atomic_json, canonical, disk_lock, now,
     reference, sync_directory, valid_path,
 };
@@ -136,7 +136,7 @@ impl Repository {
         atomic_json(
             &staging.path().join("state.json"),
             &State {
-                version: skald_vcs_core::VERSION,
+                version: crate::VERSION,
                 head: Head::Branch("main".into()),
                 branches: BTreeMap::from([("main".into(), None)]),
                 tags: BTreeMap::new(),
@@ -183,7 +183,7 @@ impl Repository {
             .read_meta("state.json")?
             .context("missing working copy metadata")?;
         ensure!(
-            state.version == skald_vcs_core::VERSION,
+            state.version == crate::VERSION,
             "unsupported working copy version"
         );
         ensure!(
@@ -348,7 +348,7 @@ impl Repository {
         while let Some(path) = pending.pop_first() {
             visited += 1;
             ensure!(
-                visited <= skald_vcs_core::MAX_FILES * 2,
+                visited <= crate::MAX_FILES * 2,
                 "working tree exceeds scan limit"
             );
             let relative = path.strip_prefix(&self.root)?;
@@ -818,7 +818,7 @@ impl Repository {
                 .map(|r| resolve(state, store, r))
                 .transpose()?
                 .or(state.tip());
-            store.history(root, limit.min(skald_vcs_core::MAX_GRAPH))
+            store.history(root, limit.min(crate::MAX_GRAPH))
         })
     }
     pub fn diff(
@@ -953,7 +953,7 @@ impl Repository {
                     let [base_size, ours_size, theirs_size] = sizes;
                     if [base_size?, ours_size?, theirs_size?]
                         .into_iter()
-                        .all(|size| size <= skald_vcs_core::text::TEXT_LIMIT as u64)
+                        .all(|size| size <= crate::text::TEXT_LIMIT as u64)
                     {
                         workspace::hydrate(store, ids, remote)?;
                     }
@@ -1163,7 +1163,7 @@ fn check_replace_dir(dir: &Path, prefix: &str, old: &Snapshot) -> Result<()> {
         );
         let m = safe_metadata(&child.path())?.context("directory changed during checkout")?;
         ensure!(
-            key.split('/').count() <= skald_vcs_core::MAX_DEPTH,
+            key.split('/').count() <= crate::MAX_DEPTH,
             "directory exceeds checkout depth"
         );
         if m.is_dir() {
@@ -1221,8 +1221,8 @@ fn changes(base: &Snapshot, target: &Snapshot) -> BTreeMap<String, &'static str>
         .collect()
 }
 fn merge_base(store: &Store, ours: Id, theirs: Id) -> Result<Id> {
-    let ours = store.history([ours], skald_vcs_core::MAX_GRAPH)?;
-    let theirs = store.history([theirs], skald_vcs_core::MAX_GRAPH)?;
+    let ours = store.history([ours], crate::MAX_GRAPH)?;
+    let theirs = store.history([theirs], crate::MAX_GRAPH)?;
     let ours: BTreeSet<_> = ours.into_iter().map(|(id, _)| id).collect();
     let mut candidates = BTreeSet::new();
     let mut ancestors = BTreeSet::new();
@@ -1242,7 +1242,7 @@ fn merge_base(store: &Store, ours: Id, theirs: Id) -> Result<Id> {
 }
 fn merge_text(store: &Store, base: Entry, ours: Entry, theirs: Entry) -> Result<Option<Entry>> {
     for entry in [base, ours, theirs] {
-        if store.manifest(entry.id)?.size > skald_vcs_core::text::TEXT_LIMIT as u64 {
+        if store.manifest(entry.id)?.size > crate::text::TEXT_LIMIT as u64 {
             return Ok(None);
         }
     }

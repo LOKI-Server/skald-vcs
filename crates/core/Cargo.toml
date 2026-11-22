@@ -1,12 +1,18 @@
 [package]
 name = "skald-vcs-core"
-description = "Object format and storage engine for Skald"
+description = "Object format, storage engine, client, and hosting for Skald"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
 readme.workspace = true
+
+[features]
+# Working copies, history, merge, and HTTPS synchronization.
+client = ["dep:ignore", "dep:reqwest"]
+# Hosted repositories, atomic references, quota hooks, and advisory locks.
+server = []
 
 [dependencies]
 anyhow.workspace = true
@@ -18,3 +24,20 @@ fs2 = "0.4"
 zstd = "0.13"
 unicode-normalization = "0.1"
 similar = "3"
+ignore = { version = "0.4", optional = true }
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"], optional = true }
+
+[[test]]
+name = "client"
+required-features = ["client"]
+
+[[test]]
+name = "server"
+required-features = ["server"]
+
+[[example]]
+name = "benchmark"
+required-features = ["client"]
+
+[package.metadata.docs.rs]
+all-features = true

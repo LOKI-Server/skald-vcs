@@ -4,7 +4,7 @@
 From the Skald workspace, run the release-mode benchmark against a source directory. An optional Git executable runs the comparison in isolated temporary repositories. It is a benchmark dependency only.
 
 ~~~powershell
-cargo run --release -p skald-vcs-client --example benchmark -- 'PATH_TO_LOKI/crates/loki-server/src' 'C:/Program Files/Git/cmd/git.exe'
+cargo run --release -p skald-vcs-core --features client --example benchmark -- 'PATH_TO_LOKI/crates/loki-server/src' 'C:/Program Files/Git/cmd/git.exe'
 ~~~
 
 The benchmark stages and commits the source files, then prepends one line to the first sorted file. The binary case creates a 32 MiB deterministic, high-entropy asset and inserts 31 bytes near the beginning. Disk measurements count bytes under each object store after the corresponding revision, excluding working copies and reference metadata. Git runs gc before disk measurements. Transfer figures use Skald's unique uncompressed object payloads and Git's thin-pack payload. They exclude HTTP or protocol framing. Timings cover stage and commit on the local machine.

@@ -1,4 +1,4 @@
-use skald_vcs_client::{Repository, WorkspaceChange};
+use skald_vcs_core::client::{Repository, WorkspaceChange};
 use skald_vcs_core::Settings;
 use std::{fs, time::Duration};
 

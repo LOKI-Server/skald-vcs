@@ -4,7 +4,7 @@ use reqwest::{
     Url,
     blocking::{Client, RequestBuilder, Response},
 };
-use skald_vcs_core::{
+use crate::{
     Id, Kind, MAX_GRAPH, MAX_OBJECT, Object, Settings, Store, VERSION,
     protocol::{MAX_NEGOTIATION, MAX_REFS, Objects, Refs, Update},
     read_bounded, reference,
@@ -51,11 +51,13 @@ impl Remote {
             request.bearer_auth(&self.token)
         };
         let response = request.send()?;
-        ensure!(
-            response.status().is_success(),
-            "remote returned {}",
-            response.status()
-        );
+        let status = response.status();
+        if !status.is_success() {
+            match refusal(response) {
+                Some(reason) => anyhow::bail!("remote refused the request ({status}): {reason}"),
+                None => anyhow::bail!("remote returned {status}"),
+            }
+        }
         Ok(response)
     }
 
@@ -78,7 +80,7 @@ impl Remote {
         Ok(refs)
     }
 
-    pub(crate) fn download(&self, store: &Store, id: Id) -> Result<Object> {
+    pub(super) fn download(&self, store: &Store, id: Id) -> Result<Object> {
         let response = self.request(self.http.get(self.url(&["objects", &id.to_string()])?))?;
         let raw = read_bounded(response, MAX_OBJECT)?;
         store.receive(id, &raw)?;
@@ -172,8 +174,8 @@ impl Remote {
         &self,
         path: &str,
         seconds: Option<u32>,
-    ) -> Result<Option<skald_vcs_core::protocol::Lock>> {
-        skald_vcs_core::valid_path(path)?;
+    ) -> Result<Option<crate::protocol::Lock>> {
+        crate::valid_path(path)?;
         let response = self.request(
             self.http
                 .put(self.url(&["locks"])?)
@@ -181,7 +183,7 @@ impl Remote {
         )?;
         #[derive(serde::Deserialize)]
         struct Locked {
-            lock: Option<skald_vcs_core::protocol::Lock>,
+            lock: Option<crate::protocol::Lock>,
         }
         let result: Locked = serde_json::from_slice(&read_bounded(response, 4096)?)?;
         Ok(result.lock)
@@ -193,6 +195,23 @@ impl Remote {
         self.request(self.http.put(self.url(&["refs", kind, name])?).json(change))?;
         Ok(())
     }
+}
+
+/// The reason a server gave for refusing a request, from a JSON `error` field.
+/// The text comes from the remote, so control characters are dropped and its
+/// length is capped before it reaches a terminal or dialog.
+fn refusal(response: Response) -> Option<String> {
+    let body = read_bounded(response, 4096).ok()?;
+    let value: serde_json::Value = serde_json::from_slice(&body).ok()?;
+    let reason: String = value
+        .get("error")?
+        .as_str()?
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(300)
+        .collect();
+    let reason = reason.trim();
+    (!reason.is_empty()).then(|| reason.to_owned())
 }
 
 fn validate_url(url: &str) -> Result<Url> {
@@ -214,7 +233,7 @@ fn validate_url(url: &str) -> Result<Url> {
     Ok(url)
 }
 
-pub(crate) fn fetch(state: &mut State, store: &Store, remote: &Remote, name: &str) -> Result<Refs> {
+pub(super) fn fetch(state: &mut State, store: &Store, remote: &Remote, name: &str) -> Result<Refs> {
     let refs = remote.refs()?;
     let trusted = state
         .fetched
@@ -241,7 +260,7 @@ pub(crate) fn fetch(state: &mut State, store: &Store, remote: &Remote, name: &st
     Ok(refs)
 }
 
-pub(crate) fn configured(state: &State, name: &str, token: &str) -> Result<Remote> {
+pub(super) fn configured(state: &State, name: &str, token: &str) -> Result<Remote> {
     Remote::new(state.remotes.get(name).context("unknown remote")?, token)
 }
 
@@ -295,7 +314,7 @@ impl Repository {
             linked.transition(state, store, next.index.clone(), next, Some(&remote))
         })?;
         fs::rename(temp.path(), destination)?;
-        skald_vcs_core::sync_directory(parent)?;
+        crate::sync_directory(parent)?;
         Self::open(destination)
     }
 
@@ -433,5 +452,64 @@ impl Repository {
                 Some(&remote),
             )
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Remote;
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+    };
+
+    /// Answers one request with `status` and `body`, and returns the remote URL.
+    fn answer_once(status: &'static str, body: &'static str) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!(
+            "http://{}/skald/v1/repos/test",
+            listener.local_addr().unwrap()
+        );
+        std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = [0u8; 4096];
+            let _ = stream.read(&mut request);
+            let reply = format!(
+                "HTTP/1.1 {status}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream.write_all(reply.as_bytes()).unwrap();
+        });
+        url
+    }
+
+    #[test]
+    fn refusals_carry_the_servers_reason_without_control_characters() {
+        let url = answer_once(
+            "423 Locked",
+            r#"{"error":"Changes are paused \u001b[31muntil the transfer is decided."}"#,
+        );
+        let error = Remote::new(&url, "token")
+            .unwrap()
+            .refs()
+            .unwrap_err()
+            .to_string();
+        assert!(error.contains("423 Locked"), "{error}");
+        assert!(
+            error.contains("Changes are paused [31muntil the transfer is decided."),
+            "{error}"
+        );
+        assert!(!error.contains('\u{1b}'), "{error}");
+    }
+
+    #[test]
+    fn refusals_without_a_reason_keep_the_status() {
+        let url = answer_once("502 Bad Gateway", "<html>proxy</html>");
+        let error = Remote::new(&url, "")
+            .unwrap()
+            .refs()
+            .unwrap_err()
+            .to_string();
+        assert_eq!(error, "remote returned 502 Bad Gateway");
     }
 }

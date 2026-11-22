@@ -1,13 +1,13 @@
 
-# Skald 0.1
+# Skald 0.2
 
 Named for the Old Norse court poets, Skald is an offline-first version control system written in Rust. It stores revisions and directory snapshots by content, uses content-defined BLAKE3 chunks for all files, and compresses useful chunks with Zstandard. Binary assets and source code use the same storage and synchronization workflow.
 
 | Crate | API |
 | --- | --- |
 | skald-vcs-core | Object model, hashing, storage, verification, and protocol types |
-| skald-vcs-client | Working copies, index, history, merge, and HTTPS synchronization |
-| skald-vcs-server | Hosted repositories, atomic references, quota hooks, and advisory locks |
+| skald-vcs-core, `client` feature | Working copies, index, history, merge, and HTTPS synchronization in `skald_vcs_core::client` |
+| skald-vcs-core, `server` feature | Hosted repositories, atomic references, quota hooks, and advisory locks in `skald_vcs_core::server` |
 | skald-vcs-ffi | C ABI built as a shared library and a static library |
 | skald-vcs-cli | The skald command-line client |
 
@@ -20,10 +20,14 @@ To build from source, install a current stable Rust toolchain and a native C too
 ~~~sh
 cargo build --workspace --release --locked
 cargo install --path crates/cli --locked
-cargo test --workspace --locked
+cargo test --workspace --all-features --locked
 ~~~
 
-Rust applications can use the client or server crate through a Cargo path dependency.
+Rust applications depend on skald-vcs-core and turn on the parts they need:
+
+~~~toml
+skald-vcs-core = { version = "0.2", features = ["client"] }
+~~~
 
 ## Local workflow
 

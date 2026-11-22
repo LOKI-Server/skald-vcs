@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use skald_vcs_core::{
+use crate::{
     Id, Kind, Settings, Store, VERSION, atomic_json, disk_lock, now,
     protocol::{Lock, MAX_NEGOTIATION, MAX_REFS, Refs, Update},
     reference, valid_path,
@@ -279,9 +279,9 @@ impl Hosted {
         )
     }
 
-    pub fn entry(&self, revision: Id, path: &str) -> Result<skald_vcs_core::Entry> {
+    pub fn entry(&self, revision: Id, path: &str) -> Result<crate::Entry> {
         valid_path(path)?;
-        let mut entry = skald_vcs_core::Entry {
+        let mut entry = crate::Entry {
             id: self.store.revision(revision)?.root,
             executable: false,
         };

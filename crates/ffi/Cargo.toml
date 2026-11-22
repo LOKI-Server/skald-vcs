@@ -14,7 +14,6 @@ name = "skald_vcs"
 crate-type = ["cdylib", "staticlib"]
 
 [dependencies]
-skald-vcs-client.workspace = true
-skald-vcs-core.workspace = true
+skald-vcs-core = { workspace = true, features = ["client"] }
 anyhow.workspace = true
 serde_json.workspace = true

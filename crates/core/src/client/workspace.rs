@@ -1,7 +1,7 @@
 use super::{Checkout, Remote, Repository, State, network, resolve, roots, selected};
 use anyhow::{Context, Result, ensure};
 use serde::{Deserialize, Serialize};
-use skald_vcs_core::{Entry, Id, Kind, Store, text, valid_path};
+use crate::{Entry, Id, Kind, Store, text, valid_path};
 use std::{
     collections::{BTreeMap, HashSet},
     time::Duration,
@@ -13,7 +13,7 @@ use std::{
 pub struct WorkspaceSelection(BTreeMap<String, bool>);
 
 impl WorkspaceSelection {
-    pub(crate) fn from_paths(paths: &[String]) -> Result<Self> {
+    pub(super) fn from_paths(paths: &[String]) -> Result<Self> {
         let mut selection = Self::default();
         for path in paths {
             selection.set_rule(&rule_path(path)?, true);
@@ -25,7 +25,7 @@ impl WorkspaceSelection {
         &self.0
     }
 
-    pub(crate) fn includes(&self, mut path: &str) -> bool {
+    pub(super) fn includes(&self, mut path: &str) -> bool {
         loop {
             if let Some(include) = self.0.get(path) {
                 return *include;
@@ -38,7 +38,7 @@ impl WorkspaceSelection {
         }
     }
 
-    pub(crate) fn may_include(&self, path: &str) -> bool {
+    pub(super) fn may_include(&self, path: &str) -> bool {
         let prefix = format!("{path}/");
         self.includes(path)
             || self
@@ -48,7 +48,7 @@ impl WorkspaceSelection {
                 .any(|(_, include)| *include)
     }
 
-    pub(crate) fn set_rule(&mut self, path: &str, include: bool) {
+    pub(super) fn set_rule(&mut self, path: &str, include: bool) {
         self.0.retain(|rule, _| !selected(rule, path));
         self.0.insert(path.into(), include);
     }
@@ -96,7 +96,7 @@ pub struct WorkspacePlan {
 }
 
 impl State {
-    pub(crate) fn content_remote(&self, token: Option<&str>) -> Result<Option<Remote>> {
+    pub(super) fn content_remote(&self, token: Option<&str>) -> Result<Option<Remote>> {
         match token {
             Some(token) if self.sparse.is_some() && self.remotes.contains_key("origin") => {
                 Ok(Some(network::configured(self, "origin", token)?))
@@ -252,14 +252,14 @@ impl Repository {
         })
     }
 
-    pub(crate) fn verify_sparse(&self, state: &State, store: &Store) -> Result<()> {
+    pub(super) fn verify_sparse(&self, state: &State, store: &Store) -> Result<()> {
         let selected = state.project(state.index.clone());
         store.graph(selected.values().map(|entry| entry.id))?;
         store.verify_cached(roots(state))
     }
 }
 
-pub(crate) fn hydrate(
+pub(super) fn hydrate(
     store: &Store,
     files: impl IntoIterator<Item = Id>,
     remote: Option<&Remote>,
@@ -279,7 +279,7 @@ pub(crate) fn hydrate(
     Ok(())
 }
 
-pub(crate) fn cached_text(
+pub(super) fn cached_text(
     store: &Store,
     entry: Option<Entry>,
     sparse: bool,

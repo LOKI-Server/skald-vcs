@@ -1,3 +1,8 @@
+//! Skald's object format and storage engine.
+//!
+//! The `client` feature adds working copies and HTTPS synchronization in
+//! `client`, and the `server` feature adds repository hosting in `server`.
+
 use anyhow::{Context, Result, bail, ensure};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::{
@@ -883,4 +888,8 @@ const GEAR: [u64; 256] = {
 pub mod protocol;
 mod storage;
 pub mod text;
+#[cfg(feature = "client")]
+pub mod client;
+#[cfg(feature = "server")]
+pub mod server;
 pub use storage::{Filesystem, ObjectStorage};

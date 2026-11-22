@@ -1,6 +1,6 @@
 use anyhow::{Context, Result, ensure};
 use clap::{Parser, Subcommand};
-use skald_vcs_client::{Merge, Remote, Repository, WorkspaceChange};
+use skald_vcs_core::client::{Merge, Remote, Repository, WorkspaceChange};
 use skald_vcs_core::Settings;
 use std::{path::PathBuf, time::Duration};
 
